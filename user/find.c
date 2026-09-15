@@ -1,10 +1,35 @@
 #include "kernel/types.h"
 #include "kernel/stat.h"
 #include "kernel/fs.h"
+#include "kernel/param.h"
 #include "user/user.h"
 
 void
-find(char *path, char *name)
+runcmd(char **cmdv, int cmdc, char *file)
+{
+  char *args[MAXARG];
+  int i;
+
+  for (i = 0; i < cmdc; i++)
+    args[i] = cmdv[i];
+  args[i++] = file;
+  args[i] = 0;
+
+  int pid = fork();
+  if (pid < 0) {
+    fprintf(2, "find: fork failed\n");
+    return;
+  }
+  if (pid == 0) {
+    exec(args[0], args);
+    fprintf(2, "find: exec %s failed\n", args[0]);
+    exit(1);
+  }
+  wait(0);
+}
+
+void
+find(char *path, char *name, char **execv, int execc)
 {
   char buf[512], *p;
   int fd;
@@ -25,8 +50,13 @@ find(char *path, char *name)
   for (char *q = path; *q; q++)
     if (*q == '/')
       base = q + 1;
-  if (strcmp(base, name) == 0)
-    printf("%s\n", path);
+
+  if (strcmp(base, name) == 0) {
+    if (execv)
+      runcmd(execv, execc, path);
+    else
+      printf("%s\n", path);
+  }
 
   if (st.type == T_DIR) {
     if (strlen(path) + 1 + DIRSIZ + 1 > sizeof(buf)) {
@@ -44,7 +74,7 @@ find(char *path, char *name)
         continue;
       memmove(p, de.name, DIRSIZ);
       p[DIRSIZ] = 0;
-      find(buf, name);
+      find(buf, name, execv, execc);
     }
   }
   close(fd);
@@ -53,10 +83,23 @@ find(char *path, char *name)
 int
 main(int argc, char *argv[])
 {
-  if (argc != 3) {
-    fprintf(2, "usage: find dir name\n");
+  if (argc < 3) {
+    fprintf(2, "usage: find dir name [-exec cmd ...]\n");
     exit(1);
   }
-  find(argv[1], argv[2]);
+
+  char **execv = 0;
+  int execc = 0;
+
+  if (argc > 3) {
+    if (strcmp(argv[3], "-exec") != 0) {
+      fprintf(2, "usage: find dir name [-exec cmd ...]\n");
+      exit(1);
+    }
+    execv = &argv[4];
+    execc = argc - 4;
+  }
+
+  find(argv[1], argv[2], execv, execc);
   exit(0);
 }

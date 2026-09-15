@@ -2,7 +2,15 @@
 
 #include "kernel/types.h"
 #include "user/user.h"
+#include "kernel/fs.h"
+
+#define HISTSIZE 16
+static char hist[HISTSIZE][100];
+static int histcount = 0;
+static int interactive = 1;
+
 #include "kernel/fcntl.h"
+#include "kernel/stat.h"
 
 // Parsed command representation
 #define EXEC  1
@@ -131,12 +139,115 @@ runcmd(struct cmd *cmd)
   exit(0);
 }
 
+
+void
+complete(char *buf, int *len)
+{
+  int fd;
+  struct dirent de;
+  char name[100];
+
+  int start = *len;
+
+  while (start > 0 && buf[start - 1] != ' ')
+    start--;
+
+  if (start == *len)
+    return;
+
+  fd = open(".", 0);
+  if (fd < 0)
+    return;
+
+  while (read(fd, &de, sizeof(de)) == sizeof(de)) {
+    if (de.inum == 0)
+      continue;
+
+    memmove(name, de.name, DIRSIZ);
+    name[DIRSIZ] = 0;
+
+    int match = 1;
+    int k;
+
+    for (k = 0; k < *len - start; k++) {
+      if (name[k] != buf[start + k]) {
+        match = 0;
+        break;
+      }
+    }
+
+    if (match) {
+      int j;
+
+      for (j = *len - start; name[j] != 0; j++) {
+        buf[*len] = name[j];
+        write(2, &name[j], 1);
+        (*len)++;
+      }
+
+      break;
+    }
+  }
+
+  close(fd);
+}
+
+
+int
+getcmdline(char *buf, int nbuf)
+{
+  int i = 0;
+  char c;
+
+  while (i < nbuf - 1) {
+
+    if (read(0, &c, 1) != 1)
+      return -1;
+
+    if (c == '\n') {
+      buf[i] = '\0';
+      write(2, "\n", 1);
+      return 0;
+    }
+
+    if (c == '\t') {
+      complete(buf, &i);
+      continue;
+    }
+
+    if (c == '\b' || c == 127) {
+      if (i > 0) {
+        i--;
+        write(2, "\b \b", 3);
+      }
+      continue;
+    }
+
+    buf[i] = c;
+    i++;
+
+    write(2, &c, 1);
+  }
+
+  buf[i] = '\0';
+  return 0;
+}
+
+
+
 int
 getcmd(char *buf, int nbuf)
 {
-  write(2, "$ ", 2);
+  if (interactive)
+    write(2, "$ ", 2);
+  
   memset(buf, 0, nbuf);
-  gets(buf, nbuf);
+  if (getcmdline(buf,nbuf)<0)
+    return -1;
+  if (buf[0] != 0) {
+    strcpy(hist[histcount % HISTSIZE], buf);
+    histcount++;
+  }
   if (buf[0] == 0) // EOF
     return -1;
   return 0;
@@ -147,6 +258,12 @@ main(void)
 {
   static char buf[100];
   int fd;
+  struct stat st;
+  
+  fstat(0,&st); 
+
+  if (st.type != T_DEVICE)
+    interactive = 0;
 
   // Ensure that three file descriptors are open.
   while ((fd = open("console", O_RDWR)) >= 0) {
@@ -161,13 +278,23 @@ main(void)
     char *cmd = buf;
     while (*cmd == ' ' || *cmd == '\t')
       cmd++;
-    if (*cmd == '\n') // is a blank command
+    if (*cmd == 0) // is a blank command
       continue;
+    if (strcmp(cmd, "wait") == 0) {
+      while (wait(0) >= 0)
+        ;
+      continue;
+    }
+    if (strcmp(cmd, "history") == 0) {
+      int start = histcount > HISTSIZE ? histcount - HISTSIZE : 0;
+      for (int i = start; i < histcount; i++)
+        fprintf(2, "%d %s\n", i + 1, hist[i % HISTSIZE]);
+      continue;
+    }
     if (cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == ' ') {
       // Chdir must be called by the parent, not the child.
-      cmd[strlen(cmd) - 1] = 0; // chop \n
       if (chdir(cmd + 3) < 0)
-        fprintf(2, "cannot cd %s\n", cmd + 3);
+        fprintf(2, "cannot cd %s", cmd + 3);
     } else {
       if (fork1() == 0)
         runcmd(parsecmd(cmd));
@@ -180,7 +307,7 @@ main(void)
 void
 panic(char *s)
 {
-  fprintf(2, "%s\n", s);
+  fprintf(2, "%s", s);
   exit(1);
 }
 

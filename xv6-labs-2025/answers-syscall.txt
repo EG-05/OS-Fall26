@@ -1,0 +1,35 @@
+1. Which function called syscall?
+usertrap() called syscall(), at kernel/trap.c:68. The backtrace was:
+#0  syscall () at kernel/syscall.c:133
+#1  0x0000000080001aa6 in usertrap () at kernel/trap.c:68
+
+2. What is the value of p->trapframe->a7 and what does it represent?
+p->trapframe->a7 = 0xf (15). This is the system call number, SYS_open.
+This is the first system call the init process makes, open("console", O_RDWR)
+in user/init.c (in trapframe, a0 = 0x940 points to the string "console"
+and a1 = 0x2 is O_RDWR). User code puts the syscall number in a7 before ecall.
+
+3. What was the previous mode the CPU was in?
+$sstatus = 0x200000022. The SPP bit (bit 8) is 0, so the previous mode
+was user mode. (SPP = 1 would mean supervisor mode.)
+
+4. Which assembly instruction does the kernel panic at, and which register is num?
+sepc = 0x80001cf8, and the instruction there is:
+    lw  a3,0(zero)
+The variable num is in register a3.
+
+5. gdb confirmation:
+With a breakpoint at *0x80001cf8, gdb shows
+    => 0x80001cf8 <syscall+16>:  lw  a3,0(zero)
+which is the same instruction found in kernel/kernel.asm.
+
+6. Why does the kernel crash?
+The instruction loads a word from virtual address 0. Address 0 is not
+mapped in the kernel address space (Figure 3-3): kernel RAM starts at
+KERNBASE (0x80000000), and the low addresses hold devices or nothing at all.
+So the load raises a page fault. This is confirmed by scause = 0xd,
+which is "load page fault" (stval = 0x0 is the faulting address). The kernel
+cannot handle a fault on its own, so kerneltrap() panics.
+
+7. Which process was running when the kernel panicked?
+p->name = "init", p->pid = 1.

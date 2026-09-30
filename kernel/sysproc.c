@@ -7,6 +7,13 @@
 #include "proc.h"
 #include "vm.h"
 
+
+uint64
+sys_freemem(void)
+{
+  return freemem();
+}
+
 uint64
 sys_exit(void)
 {

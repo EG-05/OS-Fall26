@@ -23,11 +23,23 @@ struct {
   struct run *freelist;
 } kmem;
 
+#define NSUPER 16                                   // 16 x 2MB = 32MB
+#define SUPERBASE (PHYSTOP - NSUPER * SUPERPGSIZE)  // 2MB-aligned
+
+struct {
+  struct spinlock lock;
+  struct run *freelist;
+  int cnt[NSUPER];      // free 4K pages seen so far in each demoted chunk
+} supermem;
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  initlock(&supermem.lock, "supermem");
+  freerange(end, (void*)SUPERBASE);
+  for(uint64 p = SUPERBASE; p < PHYSTOP; p += SUPERPGSIZE)
+    superfree((void*)p);
 }
 
 void
@@ -54,6 +66,21 @@ kfree(void *pa)
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
+    if((uint64)pa >= SUPERBASE){
+    // Page of a demoted superpage chunk. Don't put it on the ordinary free
+    // list; once all 512 pages are back, return the whole chunk.
+    int idx = ((uint64)pa - SUPERBASE) / SUPERPGSIZE;
+    int full;
+    acquire(&supermem.lock);
+    full = (++supermem.cnt[idx] == 512);
+    if(full)
+      supermem.cnt[idx] = 0;
+    release(&supermem.lock);
+    if(full)
+      superfree((void*)(SUPERBASE + (uint64)idx * SUPERPGSIZE));
+    return;
+  }
+
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
@@ -79,4 +106,33 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void*
+superalloc(void)
+{
+  struct run *r;
+
+  acquire(&supermem.lock);
+  r = supermem.freelist;
+  if(r)
+    supermem.freelist = r->next;
+  release(&supermem.lock);
+  return (void*)r;
+}
+
+void
+superfree(void *pa)
+{
+  struct run *r;
+
+  if(((uint64)pa % SUPERPGSIZE) != 0 || (uint64)pa < SUPERBASE ||
+     (uint64)pa >= PHYSTOP)
+    panic("superfree");
+
+  r = (struct run*)pa;
+  acquire(&supermem.lock);
+  r->next = supermem.freelist;
+  supermem.freelist = r;
+  release(&supermem.lock);
 }

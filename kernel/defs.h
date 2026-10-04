@@ -16,6 +16,11 @@ struct superblock;
 struct rwspinlock;
 #endif
 
+#ifndef SUPERPGSIZE
+#define SUPERPGSIZE (2 * 1024 * 1024)
+#endif
+
+
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
@@ -66,6 +71,8 @@ void            ireclaim(int);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void*           superalloc(void);
+void            superfree(void*);
 
 // log.c
 void            initlog(int, struct superblock*);

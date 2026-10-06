@@ -140,3 +140,45 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int
+sys_pgaccess(void)
+{
+  uint64 base, ubuf;
+  int n;
+  struct proc *p = myproc();
+
+  argaddr(0, &base);
+  argint(1, &n);
+  argaddr(2, &ubuf);
+
+  if(n < 0 || n > 64)            // upper limit: one uint64 of results
+    return -1;
+
+  uint64 start = PGROUNDDOWN(base);
+  uint64 mask = 0;
+
+  // Pass 1: validate every page and build the bitmask (don't clear yet).
+  for(int i = 0; i < n; i++){
+    uint64 va = start + (uint64)i * PGSIZE;
+    if(va >= MAXVA)
+      return -1;
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+    if(*pte & PTE_A)
+      mask |= (1UL << i);
+  }
+
+  // Copy out first, so a bad buffer address fails without losing A bits.
+  if(copyout(p->pagetable, ubuf, (char*)&mask, (n + 7) / 8) < 0)
+    return -1;
+
+  // Pass 2: clear the access bits.
+  for(int i = 0; i < n; i++){
+    pte_t *pte = walk(p->pagetable, start + (uint64)i * PGSIZE, 0);
+    *pte &= ~PTE_A;
+  }
+  sfence_vma();                  // flush stale TLB entries so A gets set again
+  return 0;
+}

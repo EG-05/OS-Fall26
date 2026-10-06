@@ -161,6 +161,7 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
+
 static void
 vmprint_level(pagetable_t pagetable, int level, uint64 vabase)
 {
@@ -171,12 +172,17 @@ vmprint_level(pagetable_t pagetable, int level, uint64 vabase)
 
     uint64 va = vabase + ((uint64)i << PXSHIFT(level));
 
-    // one " .." per depth: level 2 -> 1, level 1 -> 2, level 0 -> 3
     for(int d = 0; d < 3 - level; d++)
       printf(" ..");
-    printf("%p: pte %p pa %p\n", (void*)va, (void*)pte, (void*)PTE2PA(pte));
+    printf("%p: pte %p pa %p ", (void*)va, (void*)pte, (void*)PTE2PA(pte));
 
-    // not a leaf (no R/W/X bits): recurse into the next-level table
+    if(pte & PTE_R) printf("R");
+    if(pte & PTE_W) printf("W");
+    if(pte & PTE_X) printf("X");
+    if(pte & PTE_U) printf("U");
+    printf("\n");
+
+    // not a leaf: recurse into the next-level table
     if((pte & (PTE_R|PTE_W|PTE_X)) == 0)
       vmprint_level((pagetable_t)PTE2PA(pte), level - 1, va);
   }
@@ -301,6 +307,7 @@ uvmcreate()
 // Remove npages of mappings starting from va. va must be
 // page-aligned. It's OK if the mappings don't exist.
 // Optionally free the physical memory.
+
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
@@ -347,6 +354,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
+
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 {
@@ -359,7 +367,9 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; ){
     if(a % SUPERPGSIZE == 0 && a + SUPERPGSIZE <= newsz){
+      printf("uvmalloc: super try a=%p\n", (void*)a);
       mem = superalloc();
+      printf("uvmalloc: superalloc -> %p\n", mem);
       if(mem){
         memset(mem, 0, SUPERPGSIZE);
         if(mapsuper(pagetable, a, (uint64)mem, PTE_R|PTE_U|xperm) == 0){
@@ -377,16 +387,16 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
     }
 #ifndef LAB_SYSCALL
     memset(mem, 0, PGSIZE);
- #endif
+#endif
     if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
-   a+=PGSIZE;
+    a += PGSIZE;
   }
   return newsz;
-};
+}
 
 // Deallocate user pages to bring the process size from oldsz to
 // newsz.  oldsz and newsz need not be page-aligned, nor does newsz// need to be less than oldsz.  oldsz can be larger than the actual
@@ -442,6 +452,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
@@ -452,14 +463,30 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   int szinc = PGSIZE;
 
   for(i = 0; i < sz; i += szinc){
+    szinc = PGSIZE;
     if((pte = walk(old, i, 0)) == 0)
       continue;
-    if((*pte & PTE_V) == 0) {
+    if((*pte & PTE_V) == 0)
       continue;
-    }
-    szinc = PGSIZE;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
+
+    if(superwalk(old, i) == pte){
+      // superpage: copy all 2MB into a new superpage
+      if(i % SUPERPGSIZE != 0)
+        panic("uvmcopy: misaligned superpage");
+      char *smem = superalloc();
+      if(smem == 0)
+        goto err;
+      memmove(smem, (char*)pa, SUPERPGSIZE);
+      if(mapsuper(new, i, (uint64)smem, flags) != 0){
+        superfree(smem);
+        goto err;
+      }
+      szinc = SUPERPGSIZE;
+      continue;
+    }
+
     if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
@@ -474,7 +501,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
-
 
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.

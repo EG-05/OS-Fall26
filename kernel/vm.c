@@ -295,33 +295,21 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
-int
-uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
-{
-  pte_t *pte;
-  uint64 pa, i;
-  uint flags;
-  char *mem;
 
-  for (i = 0; i < sz; i += PGSIZE) {
-    if ((pte = walk(old, i, 0)) == 0)
-      continue; // page table entry hasn't been allocated
-    if ((*pte & PTE_V) == 0)
-      continue; // physical page hasn't been allocated
+int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
+  pte_t *pte; uint64 pa, i; uint flags;
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0) panic("uvmcopy: pte");
+    if((*pte & PTE_V) == 0) panic("uvmcopy: not present");
+    if(*pte & PTE_W) *pte = (*pte & ~PTE_W) | PTE_COW;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if ((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char *)pa, PGSIZE);
-    if (mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
-      kfree(mem);
-      goto err;
-    }
+    if(mappages(new, i, PGSIZE, pa, flags) != 0) goto err;
+    krefinc((void*)pa);
   }
   return 0;
-
 err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, 0, i / PGSIZE, 1);   // kfree only decrements shared pages
   return -1;
 }
 
@@ -487,5 +475,39 @@ ismapped(pagetable_t pagetable, uint64 va)
   if (*pte & PTE_V) {
     return 1;
   }
+  return 0;
+}
+
+static void vmprint_rec(pagetable_t pt, int level) {
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pt[i];
+    if(!(pte & PTE_V)) continue;
+    uint64 pa = PTE2PA(pte);
+    for(int j = 0; j <= level; j++) printk(" ..");
+    printk("%d: pte %lx pa %lx\n", i, pte, pa);
+    if((pte & (PTE_R|PTE_W|PTE_X)) == 0)   // non-leaf
+      vmprint_rec((pagetable_t)pa, level + 1);
+  }
+}
+void vmprint(pagetable_t pt) { printk("page table %p\n", pt); vmprint_rec(pt, 0); }
+
+
+int cowalloc(pagetable_t pt, uint64 va) {
+  if(va >= MAXVA) return -1;
+  va = PGROUNDDOWN(va);
+  pte_t *pte = walk(pt, va, 0);
+  if(pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_U) || !(*pte & PTE_COW))
+    return -1;
+  uint64 pa = PTE2PA(*pte);
+  uint flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+  if(krefcnt((void*)pa) == 1){          // last owner: just take it
+    *pte = PA2PTE(pa) | flags;
+    return 0;
+  }
+  char *mem = kalloc();
+  if(mem == 0) return -1;
+  memmove(mem, (char*)pa, PGSIZE);
+  *pte = PA2PTE((uint64)mem) | flags;
+  kfree((void*)pa);                     // drop our reference to the old frame
   return 0;
 }

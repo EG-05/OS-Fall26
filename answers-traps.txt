@@ -1,0 +1,7 @@
+1. Arguments are passed in registers a0-a7. 13 is held in a2 (li a2,13 at 0x24 in main).
+2. There is no call to f or g in main. The compiler inlined both and folded f(8)+1 into the constant 12 (li a1,12 at 0x26).
+3. printf is located at address 0x6f6.
+4. ra holds 0x34 just after the jal to printf at 0x30 (address of the next instruction).
+5. The output is "He110 World".
+6. For big-endian, i would be 0x726c6400. 57616 would not need to change, since %x prints the integer value regardless of byte order.
+7. After "y=" an unpredictable value is printed: printf reads the second argument from register a2, which the caller never set, so it prints whatever was in a2.

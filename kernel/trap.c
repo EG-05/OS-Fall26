@@ -47,10 +47,10 @@ usertrap(void)
   w_stvec((uint64)kernelvec);  //DOC: kernelvec
 
   struct proc *p = myproc();
-  
+
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
+
   if(r_scause() == 8){
     // system call
 
@@ -81,8 +81,18 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if(p->alarm_interval > 0 && !p->alarm_going){
+      p->alarm_ticks++;
+      if(p->alarm_ticks >= p->alarm_interval){
+        p->alarm_ticks = 0;
+        p->alarm_tf = *p->trapframe;           // snapshot of user registers
+        p->alarm_going = 1;                    // don't re-enter the handler
+        p->trapframe->epc = p->alarm_handler;  // return to user mode INTO the handler
+      }
+    }
     yield();
+  }
 
   prepare_return();
 

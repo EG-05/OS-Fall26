@@ -299,22 +299,20 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       continue;   // page table entry hasn't been allocated
     if((*pte & PTE_V) == 0)
       continue;   // physical page hasn't been allocated
+    if(*pte & PTE_W){
+      *pte = (*pte & ~PTE_W) | PTE_COW;   // parent: read-only + COW
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+    krefinc((void*)pa);
   }
   return 0;
 
@@ -349,6 +347,14 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
+  pte = walk(pagetable, va0, 0);
+  if(pte == 0)
+    return -1;
+  if((*pte & PTE_V) && (*pte & PTE_COW)){
+    if(cowalloc(pagetable, va0) < 0)
+      return -1;
+    }
+
   
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
@@ -449,11 +455,43 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 // that was lazily allocated in sys_sbrk().
 // returns 0 if va is invalid or already mapped, or if
 // out of physical memory, and physical address if successful.
+
+
+int cowalloc(pagetable_t pt, uint64 va) {
+  if(va >= MAXVA) return -1;
+  va = PGROUNDDOWN(va);
+  pte_t *pte = walk(pt, va, 0);
+  if(pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_U) || !(*pte & PTE_COW))
+    return -1;
+  uint64 pa = PTE2PA(*pte);
+  uint flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+  if(krefcnt((void*)pa) == 1){
+    *pte = PA2PTE(pa) | flags;
+    return 0;
+  }
+  char *mem = kalloc();
+  if(mem == 0) return -1;
+  memmove(mem, (char*)pa, PGSIZE);
+  *pte = PA2PTE((uint64)mem) | flags;
+  kfree((void*)pa);
+  return 0;
+}
+
+
 uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   uint64 mem;
   struct proc *p = myproc();
+
+  if(!read && va < MAXVA){                 // write fault only (scause 15)
+   pte_t *pte = walk(pagetable, PGROUNDDOWN(va), 0);
+    if(pte && (*pte & PTE_V) && (*pte & PTE_U) && (*pte & PTE_COW)){
+      if(cowalloc(pagetable, va) < 0)
+        return 0;                          // out of memory: caller kills the process
+      return PTE2PA(*walk(pagetable, PGROUNDDOWN(va), 0));  // nonzero = handled
+    }
+  }
 
   if (va >= p->sz)
     return 0;

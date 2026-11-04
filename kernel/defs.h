@@ -75,6 +75,7 @@ int             pipewrite(struct pipe*, uint64, int);
 // printf.c
 int             printf(char*, ...) __attribute__ ((format (printf, 1, 2)));
 void            panic(char*) __attribute__((noreturn));
+void            backtrace(void);
 void            printfinit(void);
 
 // proc.c
@@ -169,6 +170,9 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
+int             cowalloc(pagetable_t, uint64);
+void            krefinc(void*);
+int             krefcnt(void*);
 
 // plic.c
 void            plicinit(void);

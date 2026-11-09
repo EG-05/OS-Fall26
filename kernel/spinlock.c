@@ -7,6 +7,7 @@
 #include "riscv.h"
 #include "proc.h"
 #include "defs.h"
+#include "stdio.h"
 
 void
 initlock(struct spinlock *lk, char *name)
@@ -45,8 +46,9 @@ acquire(struct spinlock *lk)
 void
 release(struct spinlock *lk)
 {
-  if (!holding(lk))
-    panic("release");
+  if (!holding(lk)){
+    panic(lk->name);
+  }
 
   lk->cpu = 0;
 
@@ -113,4 +115,20 @@ pop_off(void)
   c->noff -= 1;
   if (c->noff == 0 && c->intena)
     intr_on();
+}
+
+
+int
+tryacquire(struct spinlock *lk)
+{
+  push_off();
+  if(holding(lk))
+    panic("tryacquire");
+  if(__sync_lock_test_and_set(&lk->locked, 1) != 0){
+    pop_off();
+    return 0;
+  }
+  __sync_synchronize();
+  lk->cpu = mycpu();
+  return 1;
 }

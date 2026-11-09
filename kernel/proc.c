@@ -432,6 +432,7 @@ scheduler(void)
   struct cpu *c = mycpu();
 
   c->proc = 0;
+  c->prev = 0;
   for (;;) {
     // The most recent process to run may have had interrupts
     // turned off; enable them to avoid a deadlock if all
@@ -450,6 +451,7 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+	c->prev = 0; 
         swtch(&c->context, &p->context);
 
         // Don't re-enable interrupts on release.
@@ -457,8 +459,11 @@ scheduler(void)
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
-        c->proc = 0;
+        release(&c->prev->lock); 
+	c->prev = 0; 
+	c->proc = 0;
         found = 1;
+	break;
       }
       release(&p->lock);
     }
@@ -481,19 +486,56 @@ sched(void)
 {
   int intena;
   struct proc *p = myproc();
+  struct cpu *c = mycpu();
+  struct proc *next = 0;
 
-  if (!holding(&p->lock))
+  if(!holding(&p->lock))
     panic("sched p->lock");
-  if (mycpu()->noff != 1)
+  if(c->noff != 1)
     panic("sched locks");
-  if (p->state == RUNNING)
+  if(p->state == RUNNING)
     panic("sched RUNNING");
-  if (intr_get())
+  if(intr_get())
     panic("sched interruptible");
 
-  intena = mycpu()->intena;
-  swtch(&p->context, &mycpu()->context);
-  mycpu()->intena = intena;
+  // round-robin scan, skipping ourselves; trylock only (we already hold p->lock)
+  int start = p - proc;
+  for(int i = 1; i < NPROC; i++){
+    struct proc *q = &proc[(start + i) % NPROC];
+    if(tryacquire(&q->lock)){
+      if(q->state == RUNNABLE){
+        next = q;
+        break;
+      }
+      release(&q->lock);
+    }
+  }
+
+  intena = c->intena;
+
+  if(next){
+    next->state = RUNNING;
+    c->proc = next;
+    c->prev = p;
+    swtch(&p->context, &next->context);
+  } else if(p->state == RUNNABLE){
+    // yield() and nobody else to run: just keep going
+    p->state = RUNNING;
+    return;
+  } else {
+    // sleeping/exiting with nothing to run: go idle on this CPU's own stack
+    c->proc = 0;
+    c->prev = p;
+    swtch(&p->context, &c->context);
+  }
+
+  // We were resumed, possibly on a different CPU.
+  c = mycpu();
+  if(c->prev){
+    release(&c->prev->lock);
+    c->prev = 0;
+  }
+  c->intena = intena;
 }
 
 // Give up the CPU for one scheduling round.
@@ -515,14 +557,21 @@ forkret(void)
   extern char userret[];
   static int first = 1;
   struct proc *p = myproc();
-
+  struct cpu *c =mycpu();
   // Still holding p->lock from scheduler.
   release(&p->lock);
 
+  if(c->prev){                // 0 if we came from the idle loop
+    release(&c->prev->lock);
+    c->prev = 0;
+  }
+
+  
   if (__atomic_load_n(&first, __ATOMIC_ACQUIRE)) {
     // File system initialization must be run in the context of a
     // regular process (e.g., because it calls sleep), and thus cannot
     // be run from main().
+    first = 0; 
     fsinit(ROOTDEV);
 
     // ensure other cores see first=0.
